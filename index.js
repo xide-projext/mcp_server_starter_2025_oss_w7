@@ -1,35 +1,103 @@
+// MCP Server using TypeScript SDK - Document Approval Workflow
 
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { z } from 'zod';
+import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { z } from "zod";
 
-const server = new McpServer({ name: 'AddServer', version: '1.0.0' });
-// 1. 'add'라는 이름의 도구(tool)를 MCP 서버에 등록합니다.
+const server = new McpServer({
+  name: "approval-workflow-server",
+  version: "1.0.0"
+});
+
+const approvals = new Map(); // 타입 생략
+
+// Tool: Submit Document
 server.tool(
-    // 도구 이름
-    'add',
-  
-    // 2. 이 도구가 요구하는 입력 파라미터의 스키마 정의 (여기선 숫자 a와 b)
-    {
-      a: z.number(), // zod 라이브러리를 사용하여 a는 숫자여야 함
-      b: z.number(), // b도 숫자여야 함
-    },
-  
-    // 3. 실제 처리 함수: 사용자가 도구를 호출하면 실행되는 비동기 함수
-    async ({ a, b }) => {
-      // a와 b를 더해서 문자열로 바꾸고, 결과를 content 형식으로 반환
+  "submit_document",
+  {
+    name: z.string(),
+    type: z.enum(["보고서", "회의록", "검토요청"]),
+    content: z.string()
+  },
+  async ({ name, type, content }) => {
+    const docId = `doc-${Date.now()}`;
+    approvals.set(docId, "pending");
+    return {
+      content: [{ type: "text", text: `문서 ${docId} 제출 완료. 승인 대기 중입니다.` }]
+    };
+  }
+);
+
+// Tool: Check Approval Status
+server.tool(
+  "check_approval_status",
+  { document_id: z.string() },
+  async ({ document_id }) => {
+    const status = approvals.get(document_id) ?? "not_found";
+    return {
+      content: [{ type: "text", text: `상태: ${status}` }]
+    };
+  }
+);
+
+// Tool: Approve Document (by reviewer)
+server.tool(
+  "approve_document",
+  { document_id: z.string() },
+  async ({ document_id }) => {
+    approvals.set(document_id, "approved");
+    return {
+      content: [{ type: "text", text: `${document_id} 문서가 승인되었습니다.` }]
+    };
+  }
+);
+
+// Tool: Auto-deploy if approved
+server.tool(
+  "auto_deploy_if_approved",
+  { document_id: z.string() },
+  async ({ document_id }) => {
+    const status = approvals.get(document_id);
+    if (status === "approved") {
       return {
-        content: [
-          {
-            type: 'text',      // 응답 유형은 텍스트
-            text: String(a + b) // 더한 값을 문자열로 변환하여 응답
-          }
-        ]
+        content: [{ type: "text", text: `✅ 문서 ${document_id} 배포 완료.` }]
+      };
+    } else {
+      return {
+        content: [{ type: "text", text: `⏳ 문서 ${document_id}는 아직 승인되지 않았습니다.` }]
       };
     }
-  );
-  
+  }
+);
 
-  
+// Resource: Document Format Template
+server.resource(
+  "meeting-doc-template",
+  new ResourceTemplate("format://meeting-doc", { list: undefined }),
+  async (uri) => ({
+    contents: [
+      {
+        uri: uri.href,
+        text: `회의록 양식\n- 회의 제목\n- 참석자\n- 논의 내용\n- Action Items`
+      }
+    ]
+  })
+);
+
+// Resource: Workflow Description
+server.resource(
+  "approval-workflow",
+  new ResourceTemplate("workflow://approval-step", { list: undefined }),
+  async (uri) => ({
+    contents: [
+      {
+        uri: uri.href,
+        text: `A사 업무 승인 프로세스\n1. 작성자 제출\n2. CTO 승인\n3. 배포\n4. 완료 로그 작성`
+      }
+    ]
+  })
+);
+
+// Connect to stdio transport
 const transport = new StdioServerTransport();
 await server.connect(transport);
